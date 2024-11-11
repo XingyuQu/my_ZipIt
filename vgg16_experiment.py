@@ -70,10 +70,13 @@ def main():
 
     criterion = torch.nn.CrossEntropyLoss()
 
-    merging_fn_s = ['match_tensors_permute', 'match_tensors_zipit']
+    merging_fn_s = ['match_tensors_permute', 'match_tensors_zipit',
+                    'match_tensors_identity']
     prefix_nodes = [3, 6, 10, 13, 17, 20, 23, 27, 30, 33, 37, 40, 43]
+    # prefix_nodes = []
     res_dict = {merging_fn: {'bias_corr': [], 'zero_bias': [], 'rescale': [],
-                             'repair': []} for merging_fn in merging_fn_s}
+                             'repair': [], 'merger': [],
+                             'manual_acc': []} for merging_fn in merging_fn_s}
 
     for merging_fn in merging_fn_s:
         print(f"merging_fn: {merging_fn}")
@@ -232,6 +235,38 @@ def main():
             res_dict[merging_fn]['zero_bias'].append(zero_bias_acc)
             res_dict[merging_fn]['repair'].append(repair_acc)
             res_dict[merging_fn]['rescale'].append(rescale_acc)
+            res_dict[merging_fn]['merger'].append(merger_acc)
+            res_dict[merging_fn]['manual_acc'].append(manual_merger_acc)
+
+    # # test ensemble
+    # print("Testing ensemble")
+    # for images, labels in test_loader:
+    #     images = images.to(device)
+    #     labels = labels.to(device)
+    #     correct = 0
+    #     total = 0
+
+    #     outputs = torch.zeros(labels.size(0), 10).to(device)
+    #     for model in base_models:
+    #         outputs += model(images) / len(base_models)
+    #     _, predicted = torch.max(outputs, 1)
+    #     total += labels.size(0)
+    #     correct += (predicted == labels).sum().item()
+    # ensemble_acc = correct / total
+    # print(f"ensemble_acc: {ensemble_acc}")
+
+    # # test direct average
+    # mid_sd = interpolate_state_dicts(base_models[0].state_dict(),
+    #                                  base_models[1].state_dict(), weight=0.5)
+    # mid_model = my_vgg.my_vgg16()
+    # mid_model.load_state_dict(mid_sd)
+    # mid_model = mid_model.to(device)
+    # direct_acc = validate(mid_model, test_loader, criterion, device)[1]
+    # print(f"direct_acc: {direct_acc}")
+
+    # res_dict['ensemble'] = ensemble_acc
+    # res_dict['direct_avg'] = direct_acc
+
     torch.save(res_dict, "vgg16_acc.pth")
 
 
