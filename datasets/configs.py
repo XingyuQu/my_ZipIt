@@ -35,11 +35,11 @@ cifar10 = {
     'dir': './data/cifar-10-python',
     'num_classes': 10,
     'wrapper': torchvision.datasets.CIFAR10,
-    'batch_size': 500,
+    'batch_size': 128,
     'type': 'cifar',
     'shuffle_train': True,
     'shuffle_test': False,
-    'num_workers': 8,
+    'num_workers': 0,
 }
 
 imagenet1k = {

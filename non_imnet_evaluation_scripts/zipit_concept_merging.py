@@ -49,42 +49,49 @@ def get_task_mapping(labels, splits):
 
 
 
-def run_node_experiment(node_config, experiment_config, pairs, device, csv_file):
-    for pair in tqdm(pairs, desc='Evaluating Pairs...'):
-        experiment_config = inject_pair(experiment_config, pair)
-        config = prepare_experiment_config(raw_config)
-        train_loader = config['data']['train']['full']
-        base_models = [reset_bn_stats(base_model, train_loader) for base_model in config['models']['bases']]
-        config['node'] = node_config
-        
-        Grapher = config['graph']
-        graphs = [Grapher(deepcopy(base_model)).graphify() for base_model in base_models]
-        
-        Merge = ModelMerge(*graphs, device=device)
+def run_node_experiment(node_config, experiment_config, device, csv_file):
+    # for pair in tqdm(pairs, desc='Evaluating Pairs...'):
+        # experiment_config = inject_pair(experiment_config, pair)
 
-        Merge.transform(
-            deepcopy(config['models']['new']), 
-            train_loader, 
-            transform_fn=config['merging_fn'], 
-            metric_classes=config['metric_fns'],
-            stop_at=node_config['stop_node'],
-            **node_config['params']
-        )
+    config = prepare_experiment_config(raw_config)
+    train_loader = config['data']['train']['full']
+    base_models = [reset_bn_stats(base_model, train_loader) for base_model in config['models']['bases']]
+    config['node'] = node_config
+    
+    Grapher = config['graph']
+    graphs = [Grapher(deepcopy(base_model)).graphify() for base_model in base_models]
+    
+    Merge = ModelMerge(*graphs, device=device)
 
-        reset_bn_stats(Merge, train_loader)
-        
-        results = evaluate_model(experiment_config['eval_type'], Merge, config)
-        for idx, split in enumerate(pair):
-            results[f'Split {CONCEPT_TASKS[idx]}'] = split
-        results['Time'] = Merge.compute_transform_time
-        results['Merging Fn'] = config['merging_fn'].__name__
-        results['Model Name'] = config['model']['name']
-        results.update(flatten_nested_dict(node_config, sep=' '))
-        write_to_csv(results, csv_file=csv_file)
-        print(results)
-        # pdb.set_trace()
+    Merge.transform(
+        deepcopy(config['models']['new']), 
+        train_loader, 
+        transform_fn=config['merging_fn'], 
+        metric_classes=config['metric_fns'],
+        stop_at=node_config['stop_node'],
+        # start_at=node_config['start_at'],
+        **node_config['params']
+    )
+
+    reset_bn_stats(Merge, train_loader)
+    
+    results = evaluate_model(experiment_config['eval_type'], Merge, config)
+    # for idx, split in enumerate(pair):
+    #     results[f'Split {CONCEPT_TASKS[idx]}'] = split
+    results['Time'] = Merge.compute_transform_time
+    results['Merging Fn'] = config['merging_fn'].__name__
+    results['Model Name'] = config['model']['name']
+    results.update(flatten_nested_dict(node_config, sep=' '))
+    write_to_csv(results, csv_file=csv_file)
+    print(results)
+    # pdb.set_trace()
         
     print(f'Results of {node_config}: {results}')
+    
+    # Save the model
+    save_path = './checkpoints/cifar10_my_vgg16_zipit_1_2.pt'
+    torch.save(Merge.get_merged_state_dict(), save_path)
+    print(f'Model saved at {save_path}')
     return results
 
 
@@ -92,23 +99,26 @@ def run_node_experiment(node_config, experiment_config, pairs, device, csv_file)
 if __name__ == "__main__":
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    config_name = 'cifar50_resnet20'
-    skip_pair_idxs = [0]
+    # config_name = 'cifar50_resnet20
+    config_name = 'cifar10_my_vgg16'
+    # skip_pair_idxs = [0]
     
     experiment_configs = [
         # best experiment
-        {'stop_node': 21, 'params':{'a': .0001, 'b': .075}},
+        # {'stop_node': 21, 'params':{'a': .0001, 'b': .075}},
         # {'stop_node': 21, 'params':{'a': 1., 'b': 1.}},
         # {'stop_node': None, 'params':{'a': 0.01, 'b': 1.0}, 'dataset': {'train_fraction': .0001, 'no_transform': False}}, 
         # Alpha Ablations
         # {'stop_node': None, 'params': {'a': .0, 'b': 1.}},
+        {'stop_node': None, 'params': {'a': .3, 'b': .125}},
     ]
     
     raw_config = get_config_from_name(config_name, device=device)
-    model_dir = raw_config['model']['dir']
-    model_name = raw_config['model']['name']
-    run_pairs = find_runable_pairs(model_dir, model_name, skip_pair_idxs=skip_pair_idxs)
-    print(raw_config['merging_fn'])
+    raw_config['merging_fn'] = 'match_tensors_zipit'     
+    # model_dir = raw_config['model']['dir']
+    # model_name = raw_config['model']['name']
+    # run_pairs = find_runable_pairs(model_dir, model_name, skip_pair_idxs=skip_pair_idxs)
+    # print(raw_config['merging_fn'])
     csv_file = os.path.join(
         './csvs',
         raw_config['dataset']['name'],
@@ -123,7 +133,6 @@ if __name__ == "__main__":
             run_node_experiment(
                 node_config=node_config, 
                 experiment_config=raw_config, 
-                pairs=run_pairs, 
                 device=device,
                 csv_file=csv_file
             )

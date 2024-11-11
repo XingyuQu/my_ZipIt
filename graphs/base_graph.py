@@ -294,7 +294,7 @@ class BIGGraph(ABC):
     def compute_intermediates(self, x):
         """ Computes all intermediates in a graph network. Takes in a torch tensor (e.g., a batch). """
         self.model = self.model.eval()
-        with torch.no_grad(), torch.cuda.amp.autocast():
+        with torch.no_grad(), torch.amp.autocast(device_type=x.device.type):
             self.intermediates = {}
             self.model(x)
             return self.intermediates

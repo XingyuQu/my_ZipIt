@@ -11,7 +11,7 @@ import yaml
 from tqdm.auto import tqdm
 from copy import deepcopy
 from sklearn.model_selection import train_test_split
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.nn import CrossEntropyLoss
 from torch.optim import SGD, Adam, lr_scheduler
 from fvcore.nn.flop_count import flop_count
@@ -202,7 +202,7 @@ def evaluate_cliphead_alltasks(model, loader, label_encodings_list, splits, num_
     splits = torch.tensor(splits).to(device)
     label_encodings = torch.stack(label_encodings_list, dim=0).to(device) # [S,C,D]
     multihead = False
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(device_type=device):
         for inputs, labels in tqdm(loader, 'Evaluating model on CLIP class encodings'):
             batch_size = inputs.shape[0]
             if batch_size == 0:
@@ -544,6 +544,8 @@ def train_logits(model, train_loader, test_loader, epochs=200, remap_class_idxs=
 
 def evaluate_logits(model, test_loader, return_confusion=False, use_flip_aug=False, remap_class_idxs=None, class_idxs=None, eval_mask=None):
     model.eval()
+    # print("model type:", type(model))
+    # print("merged model type", type(model.merged_model))
     correct = 0
     total = 0
     totals = defaultdict(lambda: 0)
@@ -552,7 +554,7 @@ def evaluate_logits(model, test_loader, return_confusion=False, use_flip_aug=Fal
     device = next(iter(model.parameters())).device
     total_loss = 0
     total_iter = len(test_loader)
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(device.type):
         for _ in tqdm(test_loader, 'Evaluating classification model'):
             inputs, labels = _
             inputs = inputs.to(device)
@@ -580,6 +582,7 @@ def evaluate_logits(model, test_loader, return_confusion=False, use_flip_aug=Fal
                 if gt == p:
                     correct += 1
                     corrects[gt] += 1
+            # print("pred: ", pred, "labels: ", labels)
 
     num_classes = max(totals)+1
     totals = [totals[i] for i in range(num_classes)]
@@ -601,12 +604,18 @@ def evaluate_model(eval_type, model, config, **opt_kwargs):
         loader = config['data']['test']['full']
         num_classes = len(config['data']['test']['class_names'])
         
-    if eval_type == 'logits':    
+    if eval_type == 'logits':
         acc_overall, acc_avg, perclass_acc = evaluate_logits_alltasks(
             model, loader, 
             splits=config['dataset']['class_splits'], 
             num_classes=num_classes
         )
+    
+    elif eval_type == 'logits_same_task':
+        acc = evaluate_logits(model, loader)
+        results = {'Accuracy': acc}
+        return results
+        
         
     elif eval_type == 'clip':
         clip_features = load_clip_features(config['data']['test']['class_names'], get_device(model))
@@ -769,6 +778,33 @@ def prepare_vgg(config, device):
         'new': new_model # this will be merged model
     }
 
+def prepare_my_vgg(config, device):
+    if 'my_vgg16' in config['name']:
+        from models.my_vgg import my_vgg16 as wrapper_w
+    else:
+        raise ModuleNotFoundError(config['name'])
+    bases = []
+    name = config['name']
+    if '_w' in name:
+        width = int(name.split('_w')[-1])
+        name = name.split('_w')[0]
+    else:
+        width = 1
+    wrapper = lambda num_classes: wrapper_w(width, num_classes)
+    output_dim = config['output_dim']
+    
+    for base_path in tqdm(config['bases'], desc="Preparing Models"):
+        base_sd = torch.load(base_path, map_location=torch.device(device), weights_only=True)
+        
+        base_model = wrapper(num_classes=output_dim).to(device)
+        base_model.load_state_dict(base_sd)
+        bases.append(base_model)
+    new_model = wrapper(num_classes=output_dim).to(device)
+    return {
+        'bases': bases,
+        'new': new_model # this will be merged model
+    }
+
 def prepare_models(config, device='cuda'):
     """ Load all pretrained models in config. """
     if config['name'].startswith('resnet'):
@@ -777,6 +813,8 @@ def prepare_models(config, device='cuda'):
         return prepare_singan(config, device)
     elif config['name'].startswith('vgg'):
         return prepare_vgg(config, device)
+    elif config['name'].startswith('my_vgg'):
+        return prepare_my_vgg(config, device)
     else:
         raise NotImplementedError(config['name'])
 
@@ -793,6 +831,10 @@ def prepare_graph(config):
         model_name = config['name'].split('_w')[0]
         import graphs.vgg_graph as graph_module
         graph = getattr(graph_module, model_name)
+    elif config['name'].startswith('my_vgg'):
+        model_name = config['name'].split('_w')[0]
+        import graphs.my_vgg_graph as graph_module
+        graph = getattr(graph_module, model_name)
     else:
         raise NotImplementedError(config['name'])
     return graph
@@ -808,7 +850,7 @@ def get_merging_fn(name):
 def prepare_experiment_config(config):
     """ Load all functions/classes/models requested in config to experiment config dict. """
     data = prepare_data(config['dataset'], device=config['device'])
-    if config['eval_type'] == 'logits':
+    if 'logits' in config['eval_type']:
         config['model']['output_dim'] = len(data['test']['class_names'])
     else:
         config['model']['output_dim'] = 512
@@ -924,7 +966,7 @@ def reset_bn_stats(model, loader, reset=True):
 
     # run a single train epoch with augmentations to recalc stats
     model.train()
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(device.type):
         for images, _ in tqdm(loader, desc='Resetting batch norm'):
             _ = model(images.to(device))
     return model

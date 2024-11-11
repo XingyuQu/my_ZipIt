@@ -310,7 +310,6 @@ class ModelMerge(nn.Module):
                 
                 if self.stop_at is not None and node == self.stop_at:
                     break
-        
         self.compute_transform_time = time() - start_time
         return self.merges, self.unmerges
     
@@ -532,7 +531,11 @@ class ModelMerge(nn.Module):
             x = x[0, None].detach()
         
         try:
-            return self.merged_model(x)
+            # print("shape of x", x.shape)
+            out = self.merged_model(x)
+            # print("shape of out", out.shape)
+            # print(out)
+            return out
         except MergedModelStop as e:
             self.stop_at_ptr[0] = e.x[0]
 
