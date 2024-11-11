@@ -3,3 +3,5 @@ data/
 *.pt
 *.png
 *.csv
+*.ipynb
+*.pth
