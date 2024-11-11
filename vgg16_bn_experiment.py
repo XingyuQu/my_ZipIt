@@ -80,7 +80,6 @@ def main():
         info = graph.nodes[node]
         if info['type'] == NodeType.PREFIX:
             prefix_nodes.append(node)
-    prefix_nodes = []
     res_dict = {merging_fn: {'merger': [],
                              'merger_reset': []} for merging_fn in merging_fn_s}
 
