@@ -778,6 +778,7 @@ def prepare_vgg(config, device):
         'new': new_model # this will be merged model
     }
 
+
 def prepare_my_vgg(config, device):
     if 'my_vgg16' in config['name']:
         from models.my_vgg import my_vgg16 as wrapper_w
@@ -792,10 +793,10 @@ def prepare_my_vgg(config, device):
         width = 1
     wrapper = lambda num_classes: wrapper_w(width, num_classes)
     output_dim = config['output_dim']
-    
+
     for base_path in tqdm(config['bases'], desc="Preparing Models"):
         base_sd = torch.load(base_path, map_location=torch.device(device), weights_only=True)
-        
+
         base_model = wrapper(num_classes=output_dim).to(device)
         base_model.load_state_dict(base_sd)
         bases.append(base_model)
@@ -805,6 +806,36 @@ def prepare_my_vgg(config, device):
         'new': new_model # this will be merged model
     }
 
+
+def prepare_my_vgg_bn(config, device):
+    if 'my_vgg16' in config['name']:
+        from models.my_vgg_bn import my_vgg16_bn as wrapper_w
+    else:
+        raise ModuleNotFoundError(config['name'])
+    bases = []
+    name = config['name']
+    if '_w' in name:
+        width = int(name.split('_w')[-1])
+        name = name.split('_w')[0]
+    else:
+        width = 1
+    wrapper = lambda num_classes: wrapper_w(width, num_classes)
+    output_dim = config['output_dim']
+
+    for base_path in tqdm(config['bases'], desc="Preparing Models"):
+        base_sd = torch.load(base_path, map_location=torch.device(device),
+                             weights_only=True)
+
+        base_model = wrapper(num_classes=output_dim).to(device)
+        base_model.load_state_dict(base_sd)
+        bases.append(base_model)
+    new_model = wrapper(num_classes=output_dim).to(device)
+    return {
+        'bases': bases,
+        'new': new_model  # this will be merged model
+    }
+
+
 def prepare_models(config, device='cuda'):
     """ Load all pretrained models in config. """
     if config['name'].startswith('resnet'):
@@ -813,8 +844,10 @@ def prepare_models(config, device='cuda'):
         return prepare_singan(config, device)
     elif config['name'].startswith('vgg'):
         return prepare_vgg(config, device)
-    elif config['name'].startswith('my_vgg'):
+    elif config['name'].startswith('my_vgg') and 'bn' not in config['name']:
         return prepare_my_vgg(config, device)
+    elif config['name'].startswith('my_vgg') and 'bn' in config['name']:
+        return prepare_my_vgg_bn(config, device)
     else:
         raise NotImplementedError(config['name'])
 
@@ -831,9 +864,13 @@ def prepare_graph(config):
         model_name = config['name'].split('_w')[0]
         import graphs.vgg_graph as graph_module
         graph = getattr(graph_module, model_name)
-    elif config['name'].startswith('my_vgg'):
+    elif config['name'].startswith('my_vgg') and 'bn' not in config['name']:
         model_name = config['name'].split('_w')[0]
         import graphs.my_vgg_graph as graph_module
+        graph = getattr(graph_module, model_name)
+    elif config['name'].startswith('my_vgg') and 'bn' in config['name']:
+        model_name = config['name'].split('_w')[0]
+        import graphs.my_vgg_bn_graph as graph_module
         graph = getattr(graph_module, model_name)
     else:
         raise NotImplementedError(config['name'])
