@@ -42,6 +42,17 @@ cifar10 = {
     'num_workers': 0,
 }
 
+cifar100 = {
+    'dir': './data/cifar-100-python',
+    'num_classes': 100,
+    'wrapper': torchvision.datasets.CIFAR100,
+    'batch_size': 128,
+    'type': 'cifar',
+    'shuffle_train': True,
+    'shuffle_test': False,
+    'num_workers': 0,
+}
+
 imagenet1k = {
     'dir': './data/ffcv/',
     'num_classes': 1000,

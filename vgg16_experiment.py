@@ -80,11 +80,11 @@ def main():
 
     for merging_fn in merging_fn_s:
         print(f"merging_fn: {merging_fn}")
-        graphs = [Grapher(deepcopy(base_model)).graphify() for
-                  base_model in base_models]
         stop_at = None
         for start_at in [None]+prefix_nodes:
             print(f"start_at: {start_at}")
+            graphs = [Grapher(deepcopy(base_model)).graphify() for base_model
+                      in base_models]
             Merge = ModelMerge(*graphs, device=device)
             Merge.transform(
                 deepcopy(config['models']['new']), 
