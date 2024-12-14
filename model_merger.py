@@ -10,6 +10,7 @@ from matching_functions import match_tensors_zipit
 from time import time
 from tqdm.auto import tqdm
 from utils import get_merging_fn
+# import ffcv
 
 
 class MergeHandler:
@@ -82,22 +83,26 @@ class MergeHandler:
     def handle_conv2d(self, forward, node, module):
         """ Apply (un)merge operation to linear layer parameters. """
         if forward: # unmerge
-            try:
-                module.weight.data = torch.einsum('OIHW,IU->OUHW', module.weight, self.unmerge)
-            except:
-                pdb.set_trace()
+            module.weight.data = torch.einsum('OIHW,IU->OUHW', module.weight, self.unmerge)
+
         else: # merge
-            try:
-                module.weight.data = torch.einsum('UO,OIHW->UIHW', self.merge, module.weight)
-            except:
-                pdb.set_trace()
+            module.weight.data = torch.einsum('UO,OIHW->UIHW', self.merge, module.weight)
+                # pdb.set_trace()
             if hasattr(module, 'bias') and module.bias is not None:
                 module.bias.data = self.merge @ module.bias
     
     def handle_linear(self, forward, node, module):
         """ Apply (un)merge operation to linear layer parameters. """
         if forward: # unmerge
-            module.weight.data = module.weight @ self.unmerge
+            # hack the avgpool in imagenet vgg16
+            if self.unmerge.shape[0] == 512 and module.weight.shape[1] == 25088:
+                group_size = 7 * 7
+                num_groups = module.weight.shape[1] // (group_size)
+                weight_matrix_grouped = module.weight.data.view(-1, num_groups, group_size)
+                permuted_groups = torch.einsum('ij,bjk->bik', self.unmerge, weight_matrix_grouped)
+                module.weight.data = permuted_groups.reshape(4096, num_groups * group_size)
+            else:
+                module.weight.data = module.weight @ self.unmerge
         else:
             info = self.graph.get_node_info(node)
 
@@ -251,9 +256,14 @@ class ModelMerge(nn.Module):
             dataloader_list = dataloader
         
         numel = 0
+        
         for dataloader in dataloader_list:
-            for x, _ in tqdm(dataloader, desc="Forward Pass to Compute Merge Metrics: "):
-                x = x.to(self.device)
+            batch_num = 0
+            print("Forward Pass to Compute Merge Metrics: ")
+            for x, _ in dataloader:
+                if batch_num == len(dataloader): # hack for fractional dataloaders
+                    break
+                x = x.to(self.device).float()
                 
                 numel += x.shape[0]
                 intermediates = [g.compute_intermediates(x) for g in self.graphs]
@@ -265,6 +275,7 @@ class ModelMerge(nn.Module):
                     for metric in node_metrics.values():
                         intermeds_float = [i[node].float() for i in intermediates]
                         metric.update(x.shape[0], *intermeds_float)
+                batch_num += 1
         
         for node, node_metrics in self.metrics.items():
             for metric_name, metric in node_metrics.items():
@@ -291,8 +302,8 @@ class ModelMerge(nn.Module):
         
         nodes = list(self.metrics.keys())
         nodes.sort()
-
-        for node in tqdm(nodes, desc="Computing transformations: "):
+        print("Computing transformations: ")
+        for node in nodes:
             if self.start_at is None or node >= self.start_at:
                 metric = self.metrics[node]
                 # Maybe merge differently 
@@ -446,6 +457,7 @@ class ModelMerge(nn.Module):
                   prune_threshold=0.,
                   stop_at=None,
                   start_at=None,
+                  prepared_metrics=None,
                   **transform_kwargs
                   ):
         """ Note: this consumes the models given to the graphs. Do not modify the models you give this. """
@@ -460,8 +472,11 @@ class ModelMerge(nn.Module):
         self.metric_classes = metric_classes
         self.transform_fn = transform_fn
         self.prune_threshold = prune_threshold
+        if prepared_metrics is not None:
+            self.metrics = prepared_metrics
+        else:
+            self.compute_metrics(dataloader, metric_classes=metric_classes)
         
-        self.compute_metrics(dataloader, metric_classes=metric_classes)
         self.compute_transformations(transform_fn,
                                     reduce_ratio=1 - 1. / len(self.graphs),
                                     prune_threshold=prune_threshold,
@@ -527,8 +542,8 @@ class ModelMerge(nn.Module):
             
             self.start_at_ptr.clear()
             for k, v in start_val.items():
-                self.start_at_ptr[k] = v / total / len(self.graphs)
-            x = x[0, None].detach()
+                self.start_at_ptr[k] = v / total # / len(self.graphs)
+            x = x[:2].detach()  # since we might have batchnorm1d, we need at least 2 samples
         
         try:
             # print("shape of x", x.shape)

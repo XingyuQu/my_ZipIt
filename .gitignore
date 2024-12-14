@@ -5,3 +5,8 @@ data/
 *.csv
 *.ipynb
 *.pth
+*.pdf
+*.onnx
+*.jpg
+*.json
+*.h5

@@ -1,10 +1,10 @@
 
 import torch
 import os
-from torch import nn
-import torch.nn.functional as F
+# from torch import nn
+# import torch.nn.functional as F
 import numpy as np
-from tqdm import tqdm
+# from tqdm import tqdm
 
 from timm.data import IMAGENET_INCEPTION_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_DEFAULT_MEAN
 
@@ -41,8 +41,8 @@ class ImageNet1k:
         self.num_workers = num_workers
 
 
-        self.train = self.create_loader('train_500_0.50_90.ffcv', val=False)
-        self.test  = self.create_loader('val_500_0.50_90.ffcv', val=True)
+        self.train = self.create_loader('train.ffcv', val=False)
+        self.test  = self.create_loader('val.ffcv', val=True)
 
         self.num_train = 1281167
         self.num_test  = 50000
@@ -110,6 +110,6 @@ def prepare_loaders(config):
     )
     
     train_loader = { 'full': dataset.train }
-    test_loader = { 'full': dataset.test }
+    test_loader = { 'full': dataset.test, 'class_names': range(1000) }
 
     return train_loader, test_loader

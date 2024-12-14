@@ -11,14 +11,15 @@ import yaml
 from tqdm.auto import tqdm
 from copy import deepcopy
 from sklearn.model_selection import train_test_split
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 from torch.nn import CrossEntropyLoss
 from torch.optim import SGD, Adam, lr_scheduler
 from fvcore.nn.flop_count import flop_count
 from inspect import getmembers, isfunction
 from metric_calculators import get_metric_fns
 import torch.nn.functional as F
-import clip
+# import clip
 import einops
 import torch
 import scipy
@@ -682,7 +683,7 @@ def prepare_data(config, device='cuda'):
     if 'train_fraction' in data_config:
         for k, v in dict(train_loaders.items()).items():
             if k == 'splits':
-                train_loaders[k] = [FractionalDataloader(x, data_config['train_fraction']) for x in v]
+                train_loaders[k] = [FractionalDataloader(v[0], data_config['train_fraction'])]
             elif not isinstance(v, list) and not isinstance(v, torch.Tensor):
                 train_loaders[k] = FractionalDataloader(v, data_config['train_fraction'])
 
@@ -793,8 +794,8 @@ def prepare_my_vgg(config, device):
         width = 1
     wrapper = lambda num_classes: wrapper_w(width, num_classes)
     output_dim = config['output_dim']
-
-    for base_path in tqdm(config['bases'], desc="Preparing Models"):
+    print("Preparing Models")
+    for base_path in config['bases']:
         base_sd = torch.load(base_path, map_location=torch.device(device), weights_only=True)
 
         base_model = wrapper(num_classes=output_dim).to(device)
@@ -821,8 +822,8 @@ def prepare_my_vgg_bn(config, device):
         width = 1
     wrapper = lambda num_classes: wrapper_w(width, num_classes)
     output_dim = config['output_dim']
-
-    for base_path in tqdm(config['bases'], desc="Preparing Models"):
+    print("Preparing Models")
+    for base_path in config['bases']:
         base_sd = torch.load(base_path, map_location=torch.device(device),
                              weights_only=True)
 
@@ -833,6 +834,91 @@ def prepare_my_vgg_bn(config, device):
     return {
         'bases': bases,
         'new': new_model  # this will be merged model
+    }
+
+
+def prepare_imagenet_vgg(config, device):
+    if 'imagenet_vgg16' in config['name']:
+        from torchvision.models import vgg16 as wrapper_w
+    else:
+        raise ModuleNotFoundError(config['name'])
+    bases = []
+    wrapper = lambda: wrapper_w(pretrained=False)  # set dropout to 0 since we only need this setting
+    print("Preparing Models")
+    for base_path in config['bases']:
+        base_sd = torch.load(base_path, map_location=torch.device(device), weights_only=True)
+
+        base_model = wrapper().to(device)
+        # remove dropout in the model and sd
+        non_dropout_idx = [0, 1, 3, 4, 6]
+        base_model.classifier = nn.Sequential(*[base_model.classifier[i] for i in non_dropout_idx])
+        # print(base_model.state_dict().keys())
+        # remove 'classifier.2' and 'classifier.5' in sd; and modify the idx
+        from collections import OrderedDict
+        new_base_sd = OrderedDict()
+        for k, v in list(base_sd.items()):
+            if 'classifier.3' in k:
+                new_k = k.replace('classifier.3', 'classifier.2')
+                new_base_sd[new_k] = v
+            elif 'classifier.6' in k:
+                new_k = k.replace('classifier.6', 'classifier.4')
+                new_base_sd[new_k] = v
+            else:
+                new_base_sd[k] = v
+            
+        # print(new_base_sd.keys())
+        base_model.load_state_dict(new_base_sd)
+        # change to half precision
+        # base_model = base_model.half()
+        bases.append(base_model)
+    new_model = wrapper().to(device)
+    # remove dropout in the model
+    new_model.classifier = nn.Sequential(*[new_model.classifier[i] for i in non_dropout_idx])
+    return {
+        'bases': bases,
+        'new': new_model # this will be merged model
+    }
+
+
+def prepare_my_resnet(config, device):
+    from models.my_resnet import ResNet as wrapper_w
+    bases = []
+    name = config['name'].replace('my', 'cifar')  # e.g., cifar_resnet20_4x
+    print(name)
+    output_dim = config['output_dim']
+    wrapper = lambda num_classes: wrapper_w.get_model_from_name(name, num_classes=output_dim)
+    print("Preparing Models")
+    for base_path in config['bases']:
+        base_sd = torch.load(base_path, map_location=torch.device(device), weights_only=True)
+
+        base_model = wrapper(num_classes=output_dim).to(device)
+        base_model.load_state_dict(base_sd)
+        bases.append(base_model)
+    new_model = wrapper(num_classes=output_dim).to(device)
+    return {
+        'bases': bases,
+        'new': new_model # this will be merged model
+    }
+
+
+def prepare_my_plain_resnet(config, device):
+    from models.my_plain_resnet import ResNet as wrapper_w
+    bases = []
+    name = config['name'].replace('my', 'cifar')  # e.g., cifar_resnet20_4x
+    print(name)
+    wrapper = lambda num_classes: wrapper_w.get_model_from_name(name)
+    output_dim = config['output_dim']
+    print("Preparing Models")
+    for base_path in config['bases']:
+        base_sd = torch.load(base_path, map_location=torch.device(device), weights_only=True)
+
+        base_model = wrapper(num_classes=output_dim).to(device)
+        base_model.load_state_dict(base_sd)
+        bases.append(base_model)
+    new_model = wrapper(num_classes=output_dim).to(device)
+    return {
+        'bases': bases,
+        'new': new_model # this will be merged model
     }
 
 
@@ -848,6 +934,12 @@ def prepare_models(config, device='cuda'):
         return prepare_my_vgg(config, device)
     elif config['name'].startswith('my_vgg') and 'bn' in config['name']:
         return prepare_my_vgg_bn(config, device)
+    elif config['name'].startswith('my_resnet'):
+        return prepare_my_resnet(config, device)
+    elif config['name'].startswith('my_plain_resnet'):
+        return prepare_my_plain_resnet(config, device)
+    elif config['name'].startswith('imagenet_vgg'):
+        return prepare_imagenet_vgg(config, device)
     else:
         raise NotImplementedError(config['name'])
 
@@ -872,6 +964,18 @@ def prepare_graph(config):
         model_name = config['name'].split('_w')[0]
         import graphs.my_vgg_bn_graph as graph_module
         graph = getattr(graph_module, model_name)
+    elif config['name'].startswith('my_resnet'):
+        model_name = '_'.join(config['name'].split('_')[:2])
+        import graphs.my_resnet_graph as graph_module
+        graph = getattr(graph_module, model_name)
+    elif config['name'].startswith('my_plain_resnet'):
+        model_name = '_'.join(config['name'].split('_')[:3])
+        import graphs.my_plain_resnet_graph as graph_module
+        graph = getattr(graph_module, model_name)
+    elif config['name'].startswith('imagenet_vgg'):
+        model_name = config['name']
+        import graphs.imagenet_vgg_graph as graph_module
+        graph = getattr(graph_module, model_name)    
     else:
         raise NotImplementedError(config['name'])
     return graph
@@ -983,7 +1087,6 @@ def vector_gather(vectors, indices):
         out = out.squeeze(1)
     return out
 
-
 # use the train loader with data augmentation as this gives better results
 # taken from https://github.com/KellerJordan/REPAIR
 def reset_bn_stats(model, loader, reset=True):
@@ -992,7 +1095,7 @@ def reset_bn_stats(model, loader, reset=True):
     has_bn = False
     # resetting stats to baseline first as below is necessary for stability
     for m in model.modules():
-        if type(m) == nn.BatchNorm2d:
+        if type(m) in (nn.BatchNorm2d, nn.BatchNorm1d):
             if reset:
                 m.momentum = None # use simple average
                 m.reset_running_stats()
@@ -1006,6 +1109,7 @@ def reset_bn_stats(model, loader, reset=True):
     with torch.no_grad(), autocast(device.type):
         for images, _ in tqdm(loader, desc='Resetting batch norm'):
             _ = model(images.to(device))
+    model.eval()
     return model
 
 def get_device(model):

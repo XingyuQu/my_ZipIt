@@ -3,8 +3,9 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.nn import BatchNorm2d
-from utils import reset_bn_stats
+from torch.nn import BatchNorm2d, BatchNorm1d
+from torch.amp import autocast
+from tqdm import tqdm
 
 
 def get_weights(model):
@@ -26,7 +27,7 @@ def get_weights(model):
 
 
 def interpolate_state_dicts(state_dict_1, state_dict_2, weight,
-                            bias_norm=False):
+                            bias_norm=False, skip=0):
     if not bias_norm:
         return {key: (1 - weight) * state_dict_1[key] +
                 weight * state_dict_2[key] for key in state_dict_1.keys()}
@@ -39,7 +40,8 @@ def interpolate_state_dicts(state_dict_1, state_dict_2, weight,
                 if "weight" in p_name:
                     model_state[p_name].add_(state_dict_1[p_name], alpha=1.0 - weight)
                     model_state[p_name].add_(state_dict_2[p_name], alpha=weight)
-                    height += 1
+                    if height >= skip:
+                        height += 1
                 if "bias" in p_name:
                     model_state[p_name].add_(state_dict_1[p_name], alpha=(1.0 - weight)**height)
                     model_state[p_name].add_(state_dict_2[p_name], alpha=weight**height)
@@ -62,7 +64,10 @@ class TrackLayer(nn.Module):
     def __init__(self, layer):
         super().__init__()
         self.layer = layer
-        self.bn = nn.BatchNorm2d(layer.out_channels)
+        if isinstance(layer, nn.Conv2d):
+            self.bn = nn.BatchNorm2d(layer.out_channels)
+        elif isinstance(layer, nn.Linear):
+            self.bn = nn.BatchNorm1d(layer.out_features)
 
     def get_stats(self):
         return (self.bn.running_mean, self.bn.running_var.sqrt())
@@ -77,7 +82,10 @@ class ResetLayer(nn.Module):
     def __init__(self, layer):
         super().__init__()
         self.layer = layer
-        self.bn = nn.BatchNorm2d(layer.out_channels)
+        if isinstance(layer, nn.Conv2d):
+            self.bn = nn.BatchNorm2d(layer.out_channels)
+        elif isinstance(layer, nn.Linear):
+            self.bn = nn.BatchNorm1d(layer.out_features)
 
     def set_stats(self, goal_mean, goal_std):
         self.bn.bias.data = goal_mean
@@ -179,11 +187,55 @@ class BatchScale2d(BatchNorm2d):
             return input / torch.sqrt(self.running_var[None, :, None, None] + self.eps) * self.weight[None, :, None, None]
 
 
+class BatchScale1d(nn.BatchNorm1d):
+    def forward(self, input: Tensor) -> Tensor:
+        self._check_input_dim(input)
+
+        # Set the exponential average factor for updating running statistics
+        if self.momentum is None:
+            exponential_average_factor = 0.0
+        else:
+            exponential_average_factor = self.momentum
+
+        if self.training and self.track_running_stats:
+            # Update num_batches_tracked if it's being tracked
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked.add_(1)
+                if self.momentum is None:  # Use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # Use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        # Decide whether to use mini-batch stats or running stats
+        if self.training:
+            bn_training = True
+        else:
+            bn_training = (self.running_mean is None) and (self.running_var is None)
+
+        # Calculate variance across batch dimension
+        input_var = input.var(dim=0, unbiased=False, keepdim=True)  # Variance over batch dimension
+
+        if bn_training and self.track_running_stats:
+            # Update running statistics
+            self.running_var = (1 - exponential_average_factor) * self.running_var + exponential_average_factor * input_var.squeeze()
+            return input / torch.sqrt(input_var + self.eps) * self.weight[None, :] + self.bias[None, :]
+        else:
+            # Use running statistics
+            return input / torch.sqrt(self.running_var[None, :] + self.eps) * self.weight[None, :] + self.bias[None, :]
+
+    def _check_input_dim(self, input: Tensor):
+        if input.dim() != 2:
+            raise ValueError(f"expected 2D input (batch_size, features), got {input.dim()}D input")
+
+
 class RescaleLayer(nn.Module):
     def __init__(self, layer):
         super().__init__()
         self.layer = layer
-        self.bn = BatchScale2d(layer.out_channels)
+        if isinstance(layer, nn.Conv2d):
+            self.bn = BatchScale2d(layer.out_channels)
+        elif isinstance(layer, nn.Linear):
+            self.bn = BatchScale1d(layer.out_features)
 
     def set_stats(self, goal_std):
         self.bn.weight.data = goal_std
@@ -193,8 +245,41 @@ class RescaleLayer(nn.Module):
         return self.bn(x1)
 
 
+def get_device(model):
+    """Get the device of the model."""
+    return next(iter(model.parameters())).device
+
+
+def reset_bn_stats(model, loader, reset=True, num_batches=None):
+    """Reset batch norm stats if nn.BatchNorm2d present in the model."""
+    device = get_device(model)
+    has_bn = False
+    # resetting stats to baseline first as below is necessary for stability
+    for m in model.modules():
+        if type(m) in (nn.BatchNorm2d, nn.BatchNorm1d, BatchScale1d, BatchScale2d):
+            if reset:
+                m.momentum = None # use simple average
+                m.reset_running_stats()
+            has_bn = True
+
+    if not has_bn:
+        return model
+
+    # run a single train epoch with augmentations to recalc stats
+    model.train()
+    iter = 0
+    with torch.no_grad(), autocast(device.type):
+        for images, _ in loader:
+            if num_batches is not None and iter >= num_batches:
+                break
+            _ = model(images.to(device))
+            iter += 1
+    model.eval()
+    return model
+
+
 def repair(loader, model_tracked_s, model_repaired, device, alpha_s=None,
-           variant='repair', average=False, factor=1, name='vgg'):
+           variant='repair', average=False, factor=1, name='vgg', reset_bn=True):
     model_tracked_s = [make_tracked_net(model, device, name) for model in model_tracked_s]
     for model in model_tracked_s:
         reset_bn_stats(model, loader)
@@ -230,6 +315,6 @@ def repair(loader, model_tracked_s, model_repaired, device, alpha_s=None,
             layers[-1].set_stats(goal_mean * factor, goal_std * factor)
         elif variant == 'rescale':
             layers[-1].set_stats(goal_std * factor)
-
-    reset_bn_stats(model_repaired, loader)
+    if reset_bn:
+        reset_bn_stats(model_repaired, loader)
     return model_repaired

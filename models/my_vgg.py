@@ -38,7 +38,7 @@ class VGG(nn.Module):
         return nn.Sequential(*layers)
     
 def my_vgg11(w=1, num_classes=10):
-    return VGG('VGG11', w, num_classes=num_classes).cuda()
+    return VGG('VGG11', w, num_classes=num_classes)
 
 def my_vgg16(w=1, num_classes=10):
-    return VGG('VGG16', w, num_classes=num_classes).cuda()
+    return VGG('VGG16', w, num_classes=num_classes)

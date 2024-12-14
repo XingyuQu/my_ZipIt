@@ -4,10 +4,10 @@ config = {
         'shuffle_train': True
     },
     'model': {
-        'name': 'my_vgg16_bn',
+        'name': 'my_vgg16',
         'bases': [
-            './checkpoints/cifar100_my_vgg16_bn_1.pt',
-            './checkpoints/cifar100_my_vgg16_bn_2.pt',
+            './checkpoints/cifar100_my_vgg16_1.pt',
+            './checkpoints/cifar100_my_vgg16_2.pt',
         ]
     },
     'eval_type': 'logits_same_task',

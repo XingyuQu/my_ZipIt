@@ -40,7 +40,7 @@ class VGG_BN(nn.Module):
         return nn.Sequential(*layers)
     
 def my_vgg11_bn(w=1, num_classes=10):
-    return VGG_BN('VGG11', w, num_classes=num_classes).cuda()
+    return VGG_BN('VGG11', w, num_classes=num_classes)
 
 def my_vgg16_bn(w=1, num_classes=10):
-    return VGG_BN('VGG16', w, num_classes=num_classes).cuda()
+    return VGG_BN('VGG16', w, num_classes=num_classes)

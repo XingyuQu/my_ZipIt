@@ -54,15 +54,15 @@ cifar100 = {
 }
 
 imagenet1k = {
-    'dir': './data/ffcv/',
+    'dir': '/home/xingyu/Repos/Linear_Mode_Connectivity/data/imagenet_ffcv/',
     'num_classes': 1000,
     'wrapper': ImageNet1k,
-    'batch_size': 16,
+    'batch_size': 32,
     'res': 224,
     'inception_norm': True,
     'shuffle_test': False,
     'type': 'imagenet',
-    'num_workers': 8,
+    'num_workers': 0,
 }
 
 nabird = {
