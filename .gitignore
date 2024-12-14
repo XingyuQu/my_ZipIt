@@ -3,7 +3,6 @@ data/
 *.pt
 *.png
 *.csv
-*.ipynb
 *.pth
 *.pdf
 *.onnx
